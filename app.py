@@ -1,3 +1,4 @@
+import requests
 import streamlit as st
 import joblib
 import pandas as pd
@@ -84,31 +85,40 @@ html, body, [class*="css"]  { font-family: "Inter", "DejaVu Sans", sans-serif; }
 
 @st.cache_data
 def load_eth_data():
-    """Mengunduh data historis Ethereum (ETH-USD) dengan penanganan error yang lebih baik."""
+    """Mengunduh data dengan manipulasi User-Agent agar tidak diblokir Yahoo."""
     ticker = "ETH-USD"
     try:
-        # Download data
+        # --- TRIK ANTI-BLOKIR ---
+        # Membuat sesi khusus yang menyamar sebagai browser Chrome
+        session = requests.Session()
+        session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        })
+
+        # Download data menggunakan session tersebut
         df = yf.download(
             ticker,
             start="2024-01-01",
             end=date.today() + timedelta(days=1),
-            progress=False
+            progress=False,
+            session=session # Masukkan session ke sini
         )
+        # ------------------------
 
-        # Cek jika data kosong
         if df is None or df.empty:
-            st.error(f"Data kosong! yfinance tidak mengembalikan data untuk {ticker}.")
+            # Jika gagal, coba fallback tanpa session (kadang berhasil)
+            df = yf.download(ticker, start="2024-01-01", end=date.today() + timedelta(days=1), progress=False)
+        
+        if df is None or df.empty:
+            st.error("Data kosong! Yahoo Finance memblokir koneksi dari server ini.")
             return None
 
-        # Perbaikan struktur kolom (Flatten MultiIndex jika ada)
-        # yfinance versi baru sering mengembalikan kolom seperti ('Close', 'ETH-USD')
+        # --- PEMBERSIHAN DATA (Sama seperti sebelumnya) ---
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
 
         df = df.reset_index()
 
-        # Pastikan kolom Date ada & tipe datetime
-        # Kadang namanya 'Date', kadang 'Datetime'
         date_col = None
         for col in ['Date', 'Datetime']:
             if col in df.columns:
@@ -118,21 +128,19 @@ def load_eth_data():
         if date_col:
             df = df.rename(columns={date_col: "Date"})
         else:
-            # Jika tidak ada nama kolom Date yang dikenali, anggap kolom pertama adalah Date
             df = df.rename(columns={df.columns[0]: "Date"})
 
         df["Date"] = pd.to_datetime(df["Date"]).dt.tz_localize(None)
 
-        # Pastikan Close ada
         if "Close" not in df.columns:
-            st.error(f"Kolom 'Close' tidak ditemukan. Kolom yang ada: {df.columns.tolist()}")
+            st.error(f"Kolom 'Close' hilang. Kolom yang ada: {df.columns.tolist()}")
             return None
 
         df = df.dropna(subset=["Close"]).reset_index(drop=True)
         return df
 
     except Exception as e:
-        st.error(f"Terjadi kesalahan saat download data: {e}")
+        st.error(f"Error download: {e}")
         return None
 
 
