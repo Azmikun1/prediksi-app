@@ -1,3 +1,4 @@
+import requests
 import streamlit as st
 import joblib
 import pandas as pd
@@ -82,98 +83,74 @@ html, body, [class*="css"]  { font-family: "Inter", "DejaVu Sans", sans-serif; }
 
 # --- Fungsi-fungsi Bantuan ---
 
-@st.cache_data(ttl="12h") 
+@st.cache_data(ttl="1h") 
 def load_eth_data():
     """
-    Mengunduh data ETH-USD.
-    Strategi: Coba Online dulu -> Simpan ke CSV (Update) -> Jika Gagal -> Pakai File Backup CSV Lama.
+    Versi 'Anti-Ribet'. Memaksa data menjadi format standar
+    supaya tidak lari ke backup terus.
     """
     ticker = "ETH-USD"
     df = None
-    is_online_data_valid = False # Flag penanda
     
-    # --- USAHA 1: DOWNLOAD ONLINE ---
+    # --- LANGKAH 1: DOWNLOAD ---
     try:
-        # Mengambil data sampai besok agar data hari ini (UTC) terambil
+        # Kita pakai auto_adjust=True agar kolom lebih bersih
         df = yf.download(
             ticker, 
-            start="2024-01-01", # Sesuaikan start date kamu
+            start="2024-01-01", 
             end=date.today() + timedelta(days=1), 
-            progress=False
+            progress=False,
+            auto_adjust=True,      # Penting: Mengambil harga Close yang sudah adjusted
+            multi_level_index=False # Penting: Mencegah kolom bertumpuk (fitur yfinance baru)
         )
     except Exception as e:
-        print(f"Gagal download online: {e}")
-    
-    # --- USAHA 2: CEK & SIMPAN DATA ONLINE (UPDATE OTOMATIS) ---
+        print(f"Error download: {e}")
+
+    # --- LANGKAH 2: PAKSA FORMAT AGAR SESUAI ---
+    # Cek apakah download berhasil (tidak kosong)
     if df is not None and not df.empty:
-        temp_df = df.copy()
         
-        # Handle MultiIndex jika yfinance mengembalikan format baru
-        if isinstance(temp_df.columns, pd.MultiIndex):
-            temp_df.columns = temp_df.columns.get_level_values(0)
-        
-        if "Close" in temp_df.columns:
-            # Data valid!
-            is_online_data_valid = True
-            df = temp_df 
+        # Kadang yfinance bandel tetap kasih MultiIndex, kita ratakan paksa:
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
             
-            # --- PERBAIKAN UTAMA DI SINI ---
-            # Karena data online berhasil, kita TIMPA file backup lama dengan yang baru.
-            # Kita reset index agar 'Date' tersimpan sebagai kolom, bukan index
+        # Jika kolom namanya 'Adj Close', kita ubah jadi 'Close' biasa
+        if 'Adj Close' in df.columns:
+            df = df.rename(columns={'Adj Close': 'Close'})
+            
+        # Cek apakah sekarang kolom 'Close' sudah ada?
+        if 'Close' in df.columns:
+            # Berhasil! Kita rapikan strukturnya
+            df = df.reset_index() # Keluarkan Date dari index menjadi kolom
+            
+            # Pastikan nama kolom tanggal adalah 'Date'
+            if 'Date' not in df.columns and 'Datetime' in df.columns:
+                 df = df.rename(columns={'Datetime': 'Date'})
+            
+            # Bersihkan Timezone (UTC) agar jadi polosan
+            if 'Date' in df.columns:
+                df['Date'] = pd.to_datetime(df['Date']).dt.tz_localize(None)
+
+            # SIMPAN DATA BARU KE BACKUP (Supaya besok-besok file csv terupdate)
             try:
-                # Simpan dengan format bersih
-                backup_data = df.reset_index() 
-                backup_data.to_csv("eth_backup.csv", index=False)
-                # st.toast("File backup berhasil diperbarui otomatis!") # Opsional: notifikasi kecil
-            except Exception as e:
-                st.warning(f"Gagal memperbarui file backup lokal: {e}")
-            # -------------------------------
-
-    # --- USAHA 3: FALLBACK KE BACKUP CSV JIKA ONLINE GAGAL ---
-    if not is_online_data_valid:
-        st.warning("⚠️ Koneksi Yahoo Finance bermasalah/lambat. Menggunakan data backup terakhir.")
-        try:
-            df = pd.read_csv("eth_backup.csv")
-            
-            # Normalisasi kolom Date dari CSV
-            date_col = None
-            for col in df.columns:
-                if 'date' in col.lower():
-                    date_col = col
-                    break
-            
-            if date_col:
-                df = df.rename(columns={date_col: "Date"})
-                df["Date"] = pd.to_datetime(df["Date"])
-            else:
-                st.error("❌ Format file backup salah (tidak ada kolom Date).")
-                return None
+                df.to_csv("eth_backup.csv", index=False)
+                # st.success("✅ Data Yahoo Finance Berhasil Diupdate!") # Nyalakan jika ingin notifikasi
+            except:
+                pass
                 
-        except FileNotFoundError:
-            st.error("❌ Fatal: Gagal online DAN file 'eth_backup.csv' tidak ditemukan.")
-            return None
-
-    # --- PEMBERSIHAN DATA (CLEANING) ---
-    # Pastikan 'Date' tidak menjadi index, tapi menjadi kolom biasa
-    if "Date" not in df.columns and df.index.name == "Date":
-        df = df.reset_index()
-    elif "Date" not in df.columns and "date" in df.index.name.lower(): # Jaga-jaga variasi nama index
-         df.index.name = "Date"
-         df = df.reset_index()
-
-    # Pastikan tipe data datetime
-    if "Date" in df.columns:
-        df["Date"] = pd.to_datetime(df["Date"]).dt.tz_localize(None)
-
-    # Validasi kolom Close
-    if "Close" not in df.columns:
-        st.error("Kolom 'Close' tidak ditemukan.")
+            return df # KEMBALIKAN DATA ONLINE
+            
+    # --- LANGKAH 3: JALAN BUNTU (BACKUP) ---
+    # Hanya jalan jika Langkah 2 gagal total
+    st.warning("⚠️ Mengambil data dari file backup lokal (eth_backup.csv).")
+    try:
+        df_backup = pd.read_csv("eth_backup.csv")
+        if "Date" in df_backup.columns:
+            df_backup["Date"] = pd.to_datetime(df_backup["Date"])
+        return df_backup
+    except:
+        st.error("❌ Fatal: Data Online Gagal & File Backup Tidak Ada.")
         return None
-
-    df = df.dropna(subset=["Close"]).reset_index(drop=True)
-    df = df.sort_values(by="Date", ascending=True).reset_index(drop=True)
-    
-    return df
 
 
 def validate_scaler(scaler):
