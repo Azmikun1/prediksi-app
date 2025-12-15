@@ -1,4 +1,3 @@
-import requests
 import streamlit as st
 import joblib
 import pandas as pd
@@ -85,63 +84,84 @@ html, body, [class*="css"]  { font-family: "Inter", "DejaVu Sans", sans-serif; }
 
 @st.cache_data
 def load_eth_data():
-    """Mengunduh data dengan manipulasi User-Agent agar tidak diblokir Yahoo."""
+    """
+    Mengunduh data ETH-USD.
+    Strategi: Coba Online dulu -> Jika Gagal/Kosong -> Pakai File Backup CSV.
+    """
     ticker = "ETH-USD"
+    df = None
+    
+    # --- USAHA 1: DOWNLOAD ONLINE (Tanpa Session Custom) ---
     try:
-        # --- TRIK ANTI-BLOKIR ---
-        # Membuat sesi khusus yang menyamar sebagai browser Chrome
-        session = requests.Session()
-        session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        })
-
-        # Download data menggunakan session tersebut
+        # Kita hapus parameter 'session' sesuai pesan error
         df = yf.download(
-            ticker,
-            start="2024-01-01",
-            end=date.today() + timedelta(days=1),
-            progress=False,
-            session=session # Masukkan session ke sini
+            ticker, 
+            start="2024-01-01", 
+            end=date.today() + timedelta(days=1), 
+            progress=False
         )
-        # ------------------------
-
-        if df is None or df.empty:
-            # Jika gagal, coba fallback tanpa session (kadang berhasil)
-            df = yf.download(ticker, start="2024-01-01", end=date.today() + timedelta(days=1), progress=False)
-        
-        if df is None or df.empty:
-            st.error("Data kosong! Yahoo Finance memblokir koneksi dari server ini.")
-            return None
-
-        # --- PEMBERSIHAN DATA (Sama seperti sebelumnya) ---
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
-
-        df = df.reset_index()
-
-        date_col = None
-        for col in ['Date', 'Datetime']:
-            if col in df.columns:
-                date_col = col
-                break
-        
-        if date_col:
-            df = df.rename(columns={date_col: "Date"})
-        else:
-            df = df.rename(columns={df.columns[0]: "Date"})
-
-        df["Date"] = pd.to_datetime(df["Date"]).dt.tz_localize(None)
-
-        if "Close" not in df.columns:
-            st.error(f"Kolom 'Close' hilang. Kolom yang ada: {df.columns.tolist()}")
-            return None
-
-        df = df.dropna(subset=["Close"]).reset_index(drop=True)
-        return df
-
     except Exception as e:
-        st.error(f"Error download: {e}")
+        print(f"Gagal download online: {e}")
+    
+    # --- USAHA 2: CEK VALIDITAS DATA ONLINE ---
+    is_online_data_valid = False
+    if df is not None and not df.empty:
+        # Cek apakah kolom Close ada
+        # Handle MultiIndex column issue
+        temp_df = df.copy()
+        if isinstance(temp_df.columns, pd.MultiIndex):
+            temp_df.columns = temp_df.columns.get_level_values(0)
+        
+        if "Close" in temp_df.columns:
+            is_online_data_valid = True
+            df = temp_df # Gunakan yang sudah dirapikan
+
+    # --- USAHA 3: FALLBACK KE BACKUP CSV JIKA ONLINE GAGAL ---
+    if not is_online_data_valid:
+        st.warning("⚠️ Koneksi Yahoo Finance bermasalah (Rate Limit). Beralih ke data backup lokal.")
+        try:
+            # Membaca file backup (Pastikan file ini ada di folder project!)
+            df = pd.read_csv("eth_backup.csv")
+            
+            # Konversi kolom tanggal karena format CSV string
+            # Cari kolom yang mengandung 'Date'
+            date_col = None
+            for col in df.columns:
+                if 'date' in col.lower():
+                    date_col = col
+                    break
+            
+            if date_col:
+                df = df.rename(columns={date_col: "Date"})
+                df["Date"] = pd.to_datetime(df["Date"])
+            else:
+                st.error("❌ Format file backup salah (tidak ada kolom Date).")
+                return None
+                
+        except FileNotFoundError:
+            st.error("❌ Fatal Error: Data Online gagal DAN file 'eth_backup.csv' tidak ditemukan di GitHub.")
+            st.info("Solusi: Upload file CSV data historis manual ke repo GitHub Anda dengan nama 'eth_backup.csv'.")
+            return None
+
+    # --- PEMBERSIHAN DATA (CLEANING) ---
+    # Reset index jika Date masih jadi index
+    if "Date" not in df.columns and df.index.name == "Date":
+        df = df.reset_index()
+        
+    # Pastikan format tanggal benar
+    df["Date"] = pd.to_datetime(df["Date"]).dt.tz_localize(None)
+
+    # Pastikan kolom Close ada
+    if "Close" not in df.columns:
+        st.error("Kolom 'Close' tidak ditemukan dalam data.")
         return None
+
+    df = df.dropna(subset=["Close"]).reset_index(drop=True)
+    
+    # Urutkan data berdasarkan tanggal
+    df = df.sort_values(by="Date", ascending=True).reset_index(drop=True)
+    
+    return df
 
 
 def validate_scaler(scaler):
