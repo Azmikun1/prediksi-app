@@ -97,7 +97,7 @@ def load_eth_data():
         # Mengambil data sampai besok agar data hari ini (UTC) terambil
         df = yf.download(
             ticker, 
-            start="2020-01-01", # Sesuaikan start date kamu
+            start="2024-01-01", # Sesuaikan start date kamu
             end=date.today() + timedelta(days=1), 
             progress=False
         )
