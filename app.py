@@ -84,39 +84,56 @@ html, body, [class*="css"]  { font-family: "Inter", "DejaVu Sans", sans-serif; }
 
 @st.cache_data
 def load_eth_data():
-    """Mengunduh data historis Ethereum (ETH-USD) dan merapikan kolom agar stabil."""
+    """Mengunduh data historis Ethereum (ETH-USD) dengan penanganan error yang lebih baik."""
     ticker = "ETH-USD"
-    df = yf.download(
-        ticker,
-        start="2024-01-01",
-        end=date.today() + timedelta(days=1),
-        auto_adjust=False
-    )
+    try:
+        # Download data
+        df = yf.download(
+            ticker,
+            start="2024-01-01",
+            end=date.today() + timedelta(days=1),
+            progress=False
+        )
 
-    if df is None or df.empty:
-        return None
+        # Cek jika data kosong
+        if df is None or df.empty:
+            st.error(f"Data kosong! yfinance tidak mengembalikan data untuk {ticker}.")
+            return None
 
-    # Kadang yfinance menghasilkan MultiIndex columns
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
+        # Perbaikan struktur kolom (Flatten MultiIndex jika ada)
+        # yfinance versi baru sering mengembalikan kolom seperti ('Close', 'ETH-USD')
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
 
-    df = df.reset_index()
+        df = df.reset_index()
 
-    # Pastikan kolom Date ada & tipe datetime
-    if "Date" not in df.columns:
-        if "Datetime" in df.columns:
-            df = df.rename(columns={"Datetime": "Date"})
+        # Pastikan kolom Date ada & tipe datetime
+        # Kadang namanya 'Date', kadang 'Datetime'
+        date_col = None
+        for col in ['Date', 'Datetime']:
+            if col in df.columns:
+                date_col = col
+                break
+        
+        if date_col:
+            df = df.rename(columns={date_col: "Date"})
         else:
+            # Jika tidak ada nama kolom Date yang dikenali, anggap kolom pertama adalah Date
             df = df.rename(columns={df.columns[0]: "Date"})
 
-    df["Date"] = pd.to_datetime(df["Date"]).dt.tz_localize(None)
+        df["Date"] = pd.to_datetime(df["Date"]).dt.tz_localize(None)
 
-    # Pastikan Close ada
-    if "Close" not in df.columns:
+        # Pastikan Close ada
+        if "Close" not in df.columns:
+            st.error(f"Kolom 'Close' tidak ditemukan. Kolom yang ada: {df.columns.tolist()}")
+            return None
+
+        df = df.dropna(subset=["Close"]).reset_index(drop=True)
+        return df
+
+    except Exception as e:
+        st.error(f"Terjadi kesalahan saat download data: {e}")
         return None
-
-    df = df.dropna(subset=["Close"]).reset_index(drop=True)
-    return df
 
 
 def validate_scaler(scaler):
